@@ -32,7 +32,7 @@ _✨ 基于 [OneBot](https://github.com/howmanybots/onebot/blob/master/README.md
 </p>
 
 <p align="center">
-  <a href="https://github.com/howmanybots/onebot/blob/master/README.md">文档</a>
+  <a href="https://www.yuque.com/km57bt/hlhnxg/mw7gm8dlpccd324e">文档</a>
   ·
   <a href="https://github.com/hoshinonyaruko/gensokyo/releases">下载</a>
   ·
