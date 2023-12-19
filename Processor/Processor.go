@@ -2,12 +2,15 @@
 package Processor
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
+	"net/http"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -84,9 +87,9 @@ type OnebotGroupMessage struct {
 	MessageSeq      int         `json:"message_seq"`
 	Font            int         `json:"font"`
 	UserID          int64       `json:"user_id"`
-	RealMessageType string      `json:"real_message_type"`  //当前信息的真实类型 group group_private guild guild_private
-	IsBindedGroupId bool        `json:"is_binded_group_id"` //当前群号是否是binded后的
-	IsBindedUserId  bool        `json:"is_binded_user_id"`  //当前用户号号是否是binded后的
+	RealMessageType string      `json:"real_message_type,omitempty"`  //当前信息的真实类型 group group_private guild guild_private
+	IsBindedGroupId bool        `json:"is_binded_group_id,omitempty"` //当前群号是否是binded后的
+	IsBindedUserId  bool        `json:"is_binded_user_id,omitempty"`  //当前用户号号是否是binded后的
 }
 
 // 私聊信息事件
@@ -101,12 +104,12 @@ type OnebotPrivateMessage struct {
 	Time            int64         `json:"time"`
 	Avatar          string        `json:"avatar,omitempty"`
 	Echo            string        `json:"echo,omitempty"`
-	Message         interface{}   `json:"message"`           // For array format
-	MessageSeq      int           `json:"message_seq"`       // Optional field
-	Font            int           `json:"font"`              // Optional field
-	UserID          int64         `json:"user_id"`           // Can be either string or int depending on logic
-	RealMessageType string        `json:"real_message_type"` //当前信息的真实类型 group group_private guild guild_private
-	IsBindedUserId  bool          `json:"is_binded_user_id"` //当前用户号号是否是binded后的
+	Message         interface{}   `json:"message"`                     // For array format
+	MessageSeq      int           `json:"message_seq"`                 // Optional field
+	Font            int           `json:"font"`                        // Optional field
+	UserID          int64         `json:"user_id"`                     // Can be either string or int depending on logic
+	RealMessageType string        `json:"real_message_type,omitempty"` //当前信息的真实类型 group group_private guild guild_private
+	IsBindedUserId  bool          `json:"is_binded_user_id,omitempty"` //当前用户号号是否是binded后的
 }
 
 type PrivateSender struct {
@@ -259,7 +262,70 @@ func (p *Processors) BroadcastMessageToAll(message map[string]interface{}) error
 		return fmt.Errorf(strings.Join(errors, "; "))
 	}
 
+	//判断是否填写了反向post地址
+	if !allEmpty(config.GetPostUrl()) {
+		PostMessageToUrls(message)
+	}
 	return nil
+}
+
+// allEmpty checks if all the strings in the slice are empty.
+func allEmpty(addresses []string) bool {
+	for _, addr := range addresses {
+		if addr != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// 上报信息给反向Http
+func PostMessageToUrls(message map[string]interface{}) {
+	// 获取上报 URL 列表
+	postUrls := config.GetPostUrl()
+
+	// 检查 postUrls 是否为空
+	if len(postUrls) > 0 {
+
+		// 转换 message 为 JSON 字符串
+		jsonString, err := handlers.ConvertMapToJSONString(message)
+		if err != nil {
+			mylog.Printf("Error converting message to JSON: %v", err)
+			return
+		}
+
+		for _, url := range postUrls {
+			// 创建请求体
+			reqBody := bytes.NewBufferString(jsonString)
+
+			// 创建 POST 请求
+			req, err := http.NewRequest("POST", url, reqBody)
+			if err != nil {
+				mylog.Printf("Error creating POST request to %s: %v", url, err)
+				continue
+			}
+
+			// 设置请求头
+			req.Header.Set("Content-Type", "application/json")
+			// 设置 X-Self-ID
+			selfid := config.GetAppIDStr()
+			req.Header.Set("X-Self-ID", selfid)
+
+			// 发送请求
+			client := &http.Client{}
+			resp, err := client.Do(req)
+			if err != nil {
+				mylog.Printf("Error sending POST request to %s: %v", url, err)
+				continue
+			}
+
+			// 处理响应
+			defer resp.Body.Close()
+			// 可以添加更多的响应处理逻辑，如检查状态码等
+
+			mylog.Printf("Posted to %s successfully", url)
+		}
+	}
 }
 
 func (p *Processors) HandleFrameworkCommand(messageText string, data interface{}, Type string) error {
@@ -278,6 +344,7 @@ func (p *Processors) HandleFrameworkCommand(messageText string, data interface{}
 	}
 	var err error
 	var now, new, newpro1, newpro2 string
+	var nowgroup, newgroup string
 	var realid, realid2 string
 	var guildid, guilduserid string
 	switch v := data.(type) {
@@ -312,10 +379,22 @@ func (p *Processors) HandleFrameworkCommand(messageText string, data interface{}
 
 	// 获取MasterID数组
 	masterIDs := config.GetMasterID()
-	// 根据realid获取new
+	// 根据realid获取new(用户id)
 	now, new, err = idmap.RetrieveVirtualValuev2(realid)
+	if err != nil {
+		mylog.Printf("根据realid获取new(用户id) 错误:%v", err)
+	}
+	// 根据realid获取new(群id)
+	nowgroup, newgroup, err = idmap.RetrieveVirtualValuev2(realid2)
+	if err != nil {
+		mylog.Printf("根据realid获取new(群id)错误:%v", err)
+	}
+	// idmaps-pro获取群和用户id
 	if config.GetIdmapPro() {
 		newpro1, newpro2, err = idmap.RetrieveVirtualValuev2Pro(realid2, realid)
+		if err != nil {
+			mylog.Printf("idmaps-pro获取群和用户id 错误:%v", err)
+		}
 	}
 	// 检查真实值或虚拟值是否在数组中
 	var realValueIncluded, virtualValueIncluded bool
@@ -371,7 +450,7 @@ func (p *Processors) HandleFrameworkCommand(messageText string, data interface{}
 			message := fmt.Sprintf("idmaps-pro状态:\n%s\n%s\n%s", userMapping, groupMapping, bindInstruction)
 			SendMessage(message, data, Type, p.Api, p.Apiv2)
 		} else {
-			SendMessage("目前状态:\n当前真实值 "+now+"\n当前虚拟值 "+new+"\nbind指令:"+config.GetBindPrefix()+" 当前虚拟值"+" 目标虚拟值", data, Type, p.Api, p.Apiv2)
+			SendMessage("目前状态:\n当前真实值(用户) "+now+"\n当前虚拟值(用户) "+new+"\n当前真实值(群/频道) "+nowgroup+"\n当前虚拟值(群/频道) "+newgroup+"\nbind指令:"+config.GetBindPrefix()+" 当前虚拟值"+" 目标虚拟值", data, Type, p.Api, p.Apiv2)
 		}
 		return nil
 	}
@@ -484,7 +563,7 @@ func performBindOperation(cleanedMessage string, data interface{}, Type string, 
 	if err != nil {
 		SendMessage(err.Error(), data, Type, p, p2)
 	} else {
-		SendMessage("绑定成功,目前状态:\n当前真实值 "+now+"\n当前虚拟值 "+new, data, Type, p, p2)
+		SendMessage("绑定成功,目前状态:\n当前真实值 "+new+"\n当前虚拟值 "+now, data, Type, p, p2)
 	}
 
 	return nil
@@ -772,4 +851,17 @@ func updateMappings(userid64, vuinValue, GroupID64, idValue int64) error {
 		return err
 	}
 	return nil
+}
+
+// GenerateAvatarURL 生成根据给定 userID 和随机 q 值组合的 QQ 头像 URL
+func GenerateAvatarURL(userID int64) (string, error) {
+	// 使用 crypto/rand 生成更安全的随机数
+	n, err := rand.Int(rand.Reader, big.NewInt(5))
+	if err != nil {
+		return "", err
+	}
+	qNumber := n.Int64() + 1 // 产生 1 到 5 的随机数
+
+	// 构建并返回 URL
+	return fmt.Sprintf("http://q%d.qlogo.cn/g?b=qq&nk=%d&s=640", qNumber, userID), nil
 }

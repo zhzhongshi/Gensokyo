@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"path/filepath"
 	"regexp"
@@ -18,6 +21,7 @@ import (
 	"github.com/hoshinonyaruko/gensokyo/idmap"
 	"github.com/hoshinonyaruko/gensokyo/mylog"
 	"github.com/hoshinonyaruko/gensokyo/url"
+	"github.com/skip2/go-qrcode"
 	"github.com/tencent-connect/botgo/dto"
 	"github.com/tencent-connect/botgo/openapi"
 	"mvdan.cc/xurls" //xurls是一个从文本提取url的库 适用于多种场景
@@ -38,7 +42,7 @@ type ServerResponse struct {
 }
 
 // 发送成功回执 todo 返回可互转的messageid
-func SendResponse(client callapi.Client, err error, message *callapi.ActionMessage) error {
+func SendResponse(client callapi.Client, err error, message *callapi.ActionMessage) (string, error) {
 	// 设置响应值
 	response := ServerResponse{}
 	response.Data.MessageID = 0 // todo 实现messageid转换
@@ -57,19 +61,25 @@ func SendResponse(client callapi.Client, err error, message *callapi.ActionMessa
 
 	// 转化为map并发送
 	outputMap := structToMap(response)
-
+	// 将map转换为JSON字符串
+	jsonResponse, jsonErr := json.Marshal(outputMap)
+	if jsonErr != nil {
+		log.Printf("Error marshaling response to JSON: %v", jsonErr)
+		return "", jsonErr
+	}
+	//发送给ws 客户端
 	sendErr := client.SendMessage(outputMap)
 	if sendErr != nil {
 		mylog.Printf("Error sending message via client: %v", sendErr)
-		return sendErr
+		return "", sendErr
 	}
 
-	mylog.Printf("发送成功回执: %+v", outputMap)
-	return nil
+	mylog.Printf("发送成功回执: %+v", string(jsonResponse))
+	return string(jsonResponse), nil
 }
 
 // 信息处理函数
-func parseMessageContent(paramsMessage callapi.ParamsContent) (string, map[string][]string) {
+func parseMessageContent(paramsMessage callapi.ParamsContent, message callapi.ActionMessage, client callapi.Client, api openapi.OpenAPI, apiv2 openapi.OpenAPI) (string, map[string][]string) {
 	messageText := ""
 
 	switch message := paramsMessage.Message.(type) {
@@ -184,7 +194,7 @@ func parseMessageContent(paramsMessage callapi.ParamsContent) (string, map[strin
 		messageText = pattern.pattern.ReplaceAllString(messageText, "")
 	}
 	//最后再处理Url
-	messageText = transformMessageTextUrl(messageText)
+	messageText = transformMessageTextUrl(messageText, message, client, api, apiv2)
 
 	// for key, items := range foundItems {
 	// 	fmt.Printf("Key: %s, Items: %v\n", key, items)
@@ -230,18 +240,35 @@ func transformMessageTextAt(messageText string) string {
 }
 
 // 链接处理
-func transformMessageTextUrl(messageText string) string {
-	//是否处理url
+func transformMessageTextUrl(messageText string, message callapi.ActionMessage, client callapi.Client, api openapi.OpenAPI, apiv2 openapi.OpenAPI) string {
+	// 是否处理url
 	if config.GetTransferUrl() {
 		// 判断服务器地址是否是IP地址
 		serverAddress := config.GetServer_dir()
 		isIP := isIPAddress(serverAddress)
 		VisualIP := config.GetVisibleIP()
+
 		// 使用xurls来查找和替换所有的URL
 		messageText = xurls.Relaxed.ReplaceAllStringFunc(messageText, func(originalURL string) string {
 			// 当服务器地址是IP地址且GetVisibleIP为false时，替换URL为空
 			if isIP && !VisualIP {
 				return ""
+			}
+
+			// 如果启用了URL到QR码的转换
+			if config.GetUrlToQrimage() {
+				// 将URL转换为QR码的字节形式
+				qrCodeGenerator, _ := qrcode.New(originalURL, qrcode.High)
+				qrCodeGenerator.DisableBorder = true
+				qrSize := config.GetQrSize()
+				pngBytes, _ := qrCodeGenerator.PNG(qrSize)
+				//pngBytes 二维码图片的字节数据
+				base64Image := base64.StdEncoding.EncodeToString(pngBytes)
+				picmsg := processActionMessageWithBase64PicReplace(base64Image, message)
+				ret := callapi.CallAPIFromDict(client, api, apiv2, picmsg)
+				mylog.Printf("发送url转图片结果:%v", ret)
+				// 从文本中去除原始URL
+				return "" // 返回空字符串以去除URL
 			}
 
 			// 根据配置处理URL
@@ -258,6 +285,18 @@ func transformMessageTextUrl(messageText string) string {
 		})
 	}
 	return messageText
+}
+
+// processActionMessageWithBase64PicReplace 将原有的callapi.ActionMessage内容替换为一个base64图片
+func processActionMessageWithBase64PicReplace(base64Image string, message callapi.ActionMessage) callapi.ActionMessage {
+	newMessage := createCQImageMessage(base64Image)
+	message.Params.Message = newMessage
+	return message
+}
+
+// createCQImageMessage 从 base64 编码的图片创建 CQ 码格式的消息
+func createCQImageMessage(base64Image string) string {
+	return "[CQ:image,file=base64://" + base64Image + "]"
 }
 
 // 处理at和其他定形文到onebotv11格式(cq码)
@@ -670,4 +709,18 @@ func SendMessage(messageText string, data interface{}, messageType string, api o
 	}
 
 	return nil
+}
+
+// 将map转化为json string
+func ConvertMapToJSONString(m map[string]interface{}) (string, error) {
+	// 使用 json.Marshal 将 map 转换为 JSON 字节切片
+	jsonBytes, err := json.Marshal(m)
+	if err != nil {
+		log.Printf("Error marshalling map to JSON: %v", err)
+		return "", err
+	}
+
+	// 将字节切片转换为字符串
+	jsonString := string(jsonBytes)
+	return jsonString, nil
 }

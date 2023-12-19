@@ -52,6 +52,10 @@ settings:
   reconnect_times : 100             #反向ws连接失败后的重试次数,希望一直重试,可设置9999
   heart_beat_interval : 10          #反向ws心跳间隔 单位秒 推荐5-10
   launch_reconnect_times : 1        #启动时尝试反向ws连接次数,建议先打开应用端再开启gensokyo,因为启动时连接会阻塞webui启动,默认只连接一次,可自行增大
+  native_ob11 : false               #如果你的机器人收到事件报错,请开启此选项增加兼容性
+  ramdom_seq : false                #当多开gensokyo时,如果遇到群信息只能发出一条,请开启每个gsk的此项.(建议使用一个gsk连接多个应用)
+  url_to_qrimage : false            #将信息中的url转换为二维码单独作为图片发出,需要同时设置  #SSL配置类 机器人发送URL设置 的 transfer_url 为 true visible_ip也需要为true
+  qr_size : 200                     #二维码尺寸,单位像素
 
   #正向ws设置
   ws_server_path : "ws"             #默认监听0.0.0.0:port/ws_server_path 若有安全需求,可不放通port到公网,或设置ws_server_token 若想监听/ 可改为"",若想监听到不带/地址请写nil
@@ -121,6 +125,20 @@ settings:
 
   #穿透\cos\oss类配置(可选!)
   frp_port : "0"                    #不使用请保持为0,frp的端口,frp有内外端口,请在frp软件设置gensokyo的port,并将frp显示的对外端口填入这里
+
+  #HTTP API配置
+
+  #正向http
+  http_address: ""                  #http监听地址 与websocket独立 示例:0.0.0.0:5700 为空代表不开启
+  http_version : 11                 #暂时只支持11
+  http_timeout: 5                   #反向 HTTP 超时时间, 单位秒，<5 时将被忽略
+
+  #反向http
+  post_url: [""]                    #反向HTTP POST地址列表 为空代表不开启 示例:http://192.168.0.100:5789
+  post_secret: [""]                 #密钥
+  post_max_retries: [3]             #最大重试,0 时禁用
+  post_retries_interval: [1500]     #重试时间,单位毫秒,0 时立即
+
 `
 const Logo = `
 '                                                                                                      
