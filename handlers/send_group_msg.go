@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hoshinonyaruko/gensokyo/callapi"
@@ -18,6 +20,7 @@ import (
 	"github.com/hoshinonyaruko/gensokyo/mylog"
 	"github.com/hoshinonyaruko/gensokyo/silk"
 	"github.com/tencent-connect/botgo/dto"
+	"github.com/tencent-connect/botgo/dto/keyboard"
 	"github.com/tencent-connect/botgo/openapi"
 )
 
@@ -33,21 +36,17 @@ func HandleSendGroupMsg(client callapi.Client, api openapi.OpenAPI, apiv2 openap
 		// 当 message.Echo 是字符串类型时执行此块
 		msgType = echo.GetMsgTypeByKey(echoStr)
 	}
-	//如果获取不到 就用user_id获取信息类型
-	if msgType == "" {
-		msgType = GetMessageTypeByUserid(config.GetAppIDStr(), message.Params.UserID)
-	}
-
-	//如果获取不到 就用group_id获取信息类型
 	if msgType == "" {
 		msgType = GetMessageTypeByGroupid(config.GetAppIDStr(), message.Params.GroupID)
 	}
-	//新增 内存获取不到从数据库获取
 	if msgType == "" {
-		msgType = GetMessageTypeByUseridV2(message.Params.UserID)
+		msgType = GetMessageTypeByUserid(config.GetAppIDStr(), message.Params.UserID)
 	}
 	if msgType == "" {
 		msgType = GetMessageTypeByGroupidV2(message.Params.GroupID)
+	}
+	if msgType == "" {
+		msgType = GetMessageTypeByUseridV2(message.Params.UserID)
 	}
 	mylog.Printf("send_group_msg获取到信息类型:%v", msgType)
 	var idInt64 int64
@@ -55,10 +54,10 @@ func HandleSendGroupMsg(client callapi.Client, api openapi.OpenAPI, apiv2 openap
 	var ret *dto.GroupMessageResponse
 	var retmsg string
 
-	if message.Params.UserID != "" {
-		idInt64, err = ConvertToInt64(message.Params.UserID)
-	} else if message.Params.GroupID != "" {
+	if message.Params.GroupID != "" {
 		idInt64, err = ConvertToInt64(message.Params.GroupID)
+	} else if message.Params.UserID != "" {
+		idInt64, err = ConvertToInt64(message.Params.UserID)
 	}
 
 	//设置递归 对直接向gsk发送action时有效果
@@ -97,11 +96,11 @@ func HandleSendGroupMsg(client callapi.Client, api openapi.OpenAPI, apiv2 openap
 				mylog.Println("echo取群组发信息对应的message_id:", messageID)
 			}
 		}
-		var originalGroupID string
+		var originalGroupID, originalUserID string
 		// 检查UserID是否为nil
 		if message.Params.UserID != nil && config.GetIdmapPro() {
 			// 如果UserID不是nil且配置为使用Pro版本，则调用RetrieveRowByIDv2Pro
-			originalGroupID, _, err = idmap.RetrieveRowByIDv2Pro(message.Params.GroupID.(string), message.Params.UserID.(string))
+			originalGroupID, originalUserID, err = idmap.RetrieveRowByIDv2Pro(message.Params.GroupID.(string), message.Params.UserID.(string))
 			if err != nil {
 				mylog.Printf("Error1 retrieving original GroupID: %v", err)
 			}
@@ -119,10 +118,26 @@ func HandleSendGroupMsg(client callapi.Client, api openapi.OpenAPI, apiv2 openap
 			originalGroupID, err = idmap.RetrieveRowByIDv2(message.Params.GroupID.(string))
 			if err != nil {
 				mylog.Printf("Error retrieving original GroupID: %v", err)
-				return "", nil
+			}
+			// 检查 message.Params.UserID 是否为 nil
+			if message.Params.UserID == nil {
+				//mylog.Println("UserID is nil")
+			} else {
+				// 进行类型断言，确认 UserID 不是 nil
+				userID, ok := message.Params.UserID.(string)
+				if !ok {
+					mylog.Println("UserID is not a string")
+					// 处理类型断言失败的情况
+				} else {
+					originalUserID, err = idmap.RetrieveRowByIDv2(userID)
+					if err != nil {
+						mylog.Printf("Error retrieving original UserID: %v", err)
+					}
+				}
 			}
 		}
 		message.Params.GroupID = originalGroupID
+		message.Params.UserID = originalUserID
 		if SSM {
 			//mylog.Printf("正在使用Msgid:%v 补发之前失败的主动信息,请注意AtoP不要设置超过3,否则可能会影响正常信息发送", messageID)
 			//mylog.Printf("originalGroupID:%v ", originalGroupID)
@@ -149,6 +164,7 @@ func HandleSendGroupMsg(client callapi.Client, api openapi.OpenAPI, apiv2 openap
 		if config.GetDevMsgID() {
 			messageID = "1000"
 		}
+		mylog.Printf("群组发信息使用messageID:[%v]", messageID)
 		var singleItem = make(map[string][]string)
 		var imageType, imageUrl string
 		imageCount := 0
@@ -185,26 +201,52 @@ func HandleSendGroupMsg(client callapi.Client, api openapi.OpenAPI, apiv2 openap
 				mylog.Printf("Error: Expected RichMediaMessage type for key ")
 				return "", nil
 			}
-			// 上传图片并获取FileInfo
-			fileInfo, err := uploadMedia(context.TODO(), message.Params.GroupID.(string), richMediaMessage, apiv2)
-			if err != nil {
-				mylog.Printf("上传图片失败: %v", err)
-				return "", nil // 或其他错误处理
+			var groupMessage *dto.MessageToCreate
+			var transmd bool
+			var md *dto.Markdown
+			var kb *keyboard.MessageKeyboard
+			//判断是否需要自动转换md
+			if config.GetTwoWayEcho() {
+				md, kb, transmd = auto_md(message, messageText, richMediaMessage)
 			}
-			// 创建包含文本和图像信息的消息
-			msgseq = echo.GetMappingSeq(messageID)
-			echo.AddMappingSeq(messageID, msgseq+1)
-			groupMessage := &dto.MessageToCreate{
-				Content: messageText, // 添加文本内容
-				Media: dto.Media{
-					FileInfo: fileInfo, // 添加图像信息
-				},
-				MsgID:   messageID,
-				MsgSeq:  msgseq,
-				MsgType: 7, // 假设7是组合消息类型
-			}
-			groupMessage.Timestamp = time.Now().Unix() // 设置时间戳
 
+			//如果没有转换成md发送
+			if !transmd {
+				// 上传图片并获取FileInfo
+				fileInfo, err := uploadMedia(context.TODO(), message.Params.GroupID.(string), richMediaMessage, apiv2)
+				if err != nil {
+					mylog.Printf("上传图片失败: %v", err)
+					return "", nil // 或其他错误处理
+				}
+				// 创建包含文本和图像信息的消息
+				msgseq = echo.GetMappingSeq(messageID)
+				echo.AddMappingSeq(messageID, msgseq+1)
+				groupMessage = &dto.MessageToCreate{
+					Content: messageText, // 添加文本内容
+					Media: dto.Media{
+						FileInfo: fileInfo, // 添加图像信息
+					},
+					MsgID:   messageID,
+					MsgSeq:  msgseq,
+					MsgType: 7, // 假设7是组合消息类型
+				}
+				groupMessage.Timestamp = time.Now().Unix() // 设置时间戳
+			} else {
+				//将kb和md组合成groupMessage并用MsgType=2发送
+
+				msgseq = echo.GetMappingSeq(messageID)
+				echo.AddMappingSeq(messageID, msgseq+1)
+				groupMessage = &dto.MessageToCreate{
+					Content:  "markdown", // 添加文本内容
+					MsgID:    messageID,
+					MsgSeq:   msgseq,
+					Markdown: md,
+					Keyboard: kb,
+					MsgType:  2, // 假设7是组合消息类型
+				}
+				groupMessage.Timestamp = time.Now().Unix() // 设置时间戳
+
+			}
 			// 发送组合消息
 			ret, err = apiv2.PostGroupMessage(context.TODO(), message.Params.GroupID.(string), groupMessage)
 			if err != nil {
@@ -269,6 +311,28 @@ func HandleSendGroupMsg(client callapi.Client, api openapi.OpenAPI, apiv2 openap
 				richMediaMessage, ok := groupReply.(*dto.RichMediaMessage)
 				if !ok {
 					mylog.Printf("Error: Expected RichMediaMessage type for key %s.", key)
+					if key == "markdown" {
+						// 进行类型断言
+						groupMessage, ok := groupReply.(*dto.MessageToCreate)
+						if !ok {
+							mylog.Println("Error: Expected MessageToCreate type.")
+							return "", nil // 或其他错误处理
+						}
+						//重新为err赋值
+						ret, err = apiv2.PostGroupMessage(context.TODO(), message.Params.GroupID.(string), groupMessage)
+						if err != nil {
+							mylog.Printf("发送md信息失败: %v", err)
+						}
+						if ret != nil && ret.Message.Ret == 22009 {
+							mylog.Printf("信息发送失败,加入到队列中,下次被动信息进行发送")
+							var pair echo.MessageGroupPair
+							pair.Group = message.Params.GroupID.(string)
+							pair.GroupMessage = groupMessage
+							echo.PushGlobalStack(pair)
+						}
+						//发送成功回执
+						retmsg, _ = SendResponse(client, err, &message)
+					}
 					continue // 跳过这个项，继续下一个
 				}
 				message_return, err := apiv2.PostGroupMessage(context.TODO(), message.Params.GroupID.(string), richMediaMessage)
@@ -783,42 +847,60 @@ func generateGroupMessage(id string, foundItems map[string][]string, messageText
 			Content:    "",     // 这个字段文档没有了
 			SrvSendMsg: false,
 		}
-	} else if base64_image, ok := foundItems["base64_image"]; ok && len(base64_image) > 0 {
+	} else if base64Image, ok := foundItems["base64_image"]; ok && len(base64Image) > 0 {
 		// todo 适配base64图片
 		//因为QQ群没有 form方式上传,所以在gensokyo内置了图床,需公网,或以lotus方式连接位于公网的gensokyo
 		//要正确的开放对应的端口和设置正确的ip地址在config,这对于一般用户是有一些难度的
-		if base64Image, ok := foundItems["base64_image"]; ok && len(base64Image) > 0 {
-			// 解码base64图片数据
-			fileImageData, err := base64.StdEncoding.DecodeString(base64Image[0])
-			if err != nil {
-				mylog.Printf("failed to decode base64 image: %v", err)
-				return nil
+		// 解码base64图片数据
+		fileImageData, err := base64.StdEncoding.DecodeString(base64Image[0])
+		if err != nil {
+			mylog.Printf("failed to decode base64 image: %v", err)
+			return nil
+		}
+		// 首先压缩图片 默认不压缩
+		compressedData, err := images.CompressSingleImage(fileImageData)
+		if err != nil {
+			mylog.Printf("Error compressing image: %v", err)
+			return &dto.MessageToCreate{
+				Content: "错误: 压缩图片失败",
+				MsgID:   id,
+				MsgSeq:  msgseq,
+				MsgType: 0, // 默认文本类型
 			}
-			// 首先压缩图片 默认不压缩
-			compressedData, err := images.CompressSingleImage(fileImageData)
-			if err != nil {
-				mylog.Printf("Error compressing image: %v", err)
-				return &dto.MessageToCreate{
-					Content: "错误: 压缩图片失败",
-					MsgID:   id,
-					MsgSeq:  msgseq,
-					MsgType: 0, // 默认文本类型
-				}
-			}
-			// 将解码的图片数据转换回base64格式并上传
-			imageURL, err := images.UploadBase64ImageToServer(base64.StdEncoding.EncodeToString(compressedData))
-			if err != nil {
-				mylog.Printf("failed to upload base64 image: %v", err)
-				return nil
-			}
-			// 创建RichMediaMessage并返回
-			return &dto.RichMediaMessage{
-				EventID:    id,
-				FileType:   1, // 1代表图片
-				URL:        imageURL,
-				Content:    "", // 这个字段文档没有了
-				SrvSendMsg: false,
-			}
+		}
+		// 将解码的图片数据转换回base64格式并上传
+		imageURL, err := images.UploadBase64ImageToServer(base64.StdEncoding.EncodeToString(compressedData))
+		if err != nil {
+			mylog.Printf("failed to upload base64 image: %v", err)
+			return nil
+		}
+		// 创建RichMediaMessage并返回
+		return &dto.RichMediaMessage{
+			EventID:    id,
+			FileType:   1, // 1代表图片
+			URL:        imageURL,
+			Content:    "", // 这个字段文档没有了
+			SrvSendMsg: false,
+		}
+	} else if mdContent, ok := foundItems["markdown"]; ok && len(mdContent) > 0 {
+		// 解码base64 markdown数据
+		mdData, err := base64.StdEncoding.DecodeString(mdContent[0])
+		if err != nil {
+			mylog.Printf("failed to decode base64 md: %v", err)
+			return nil
+		}
+		markdown, keyboard, err := parseMDData(mdData)
+		if err != nil {
+			mylog.Printf("failed to parseMDData: %v", err)
+			return nil
+		}
+		return &dto.MessageToCreate{
+			Content:  "markdown",
+			MsgID:    id,
+			MsgSeq:   msgseq,
+			Markdown: markdown,
+			Keyboard: keyboard,
+			MsgType:  2,
 		}
 	} else {
 		// 返回文本信息
@@ -962,4 +1044,112 @@ func SendStackMessages(apiv2 openapi.OpenAPI, messageid string, originalGroupID 
 		}
 
 	}
+}
+
+func auto_md(message callapi.ActionMessage, messageText string, richMediaMessage *dto.RichMediaMessage) (md *dto.Markdown, kb *keyboard.MessageKeyboard, transmd bool) {
+	if echoStr, ok := message.Echo.(string); ok {
+		// 当 message.Echo 是字符串类型时才执行此块
+		msg_on_touch := echo.GetMsgIDv3(config.GetAppIDStr(), echoStr)
+		mylog.Printf("msg_on_touch:%v", msg_on_touch)
+		// 判断是否是 GetVisualkPrefixs 数组开头的文本
+		visualkPrefixs := config.GetVisualkPrefixs()
+		var matchedPrefix *config.VisualPrefixConfig
+		// 去掉前缀开头的*
+		for i, vp := range visualkPrefixs {
+			if strings.HasPrefix(vp.Prefix, "*") {
+				visualkPrefixs[i].Prefix = strings.TrimPrefix(vp.Prefix, "*")
+			}
+		}
+
+		for _, vp := range visualkPrefixs {
+			if strings.HasPrefix(msg_on_touch, vp.Prefix) {
+				if len(msg_on_touch) >= len(vp.Prefix) {
+					if msg_on_touch != " " {
+						transmd = true
+						matchedPrefix = &vp
+						break // 匹配到了
+					}
+				}
+			}
+		}
+		if transmd {
+			//将messageText和groupReply组合成一个md
+			// 处理 Markdown
+			CustomTemplateID := config.GetCustomTemplateID()
+			imgURL := richMediaMessage.URL
+			height, width, err := images.GetImageDimensions(imgURL)
+			if err != nil {
+				mylog.Printf("获取图片宽高出错")
+			}
+			imgDesc := fmt.Sprintf("图片 #%dpx #%dpx", width, height)
+			// 检查messageText是否以\r开头
+			if !strings.HasPrefix(messageText, "\r") {
+				messageText = "\r" + messageText
+			}
+			// 创建 MarkdownParams 的实例
+			mdParams := []*dto.MarkdownParams{
+				{Key: "text_start", Values: []string{" "}}, //空着
+				{Key: "img_dec", Values: []string{imgDesc}},
+				{Key: "img_url", Values: []string{imgURL}},
+				{Key: "text_end", Values: []string{messageText}},
+			}
+			// 组合模板 Markdown
+			md = &dto.Markdown{
+				CustomTemplateID: CustomTemplateID,
+				Params:           mdParams,
+			}
+			whiteList := matchedPrefix.WhiteList
+			// 创建 CustomKeyboard
+			customKeyboard := &keyboard.CustomKeyboard{
+				Rows: []*keyboard.Row{},
+			}
+
+			var currentRow *keyboard.Row
+			buttonCount := 0 // 当前行的按钮计数
+
+			for _, whiteLabel := range whiteList {
+				// 使用 strconv.Atoi 检查 whiteLabel 是否为纯数字
+				if _, err := strconv.Atoi(whiteLabel); err == nil {
+					// 如果没有错误，表示 whiteLabel 是一个数字，因此忽略这个元素并继续下一个迭代
+					continue
+				}
+
+				// 创建按钮
+				button := &keyboard.Button{
+					RenderData: &keyboard.RenderData{
+						Label:        whiteLabel,
+						VisitedLabel: whiteLabel,
+						Style:        1,
+					},
+					Action: &keyboard.Action{
+						Type: 2, // 帮用户输入二级指令
+						Permission: &keyboard.Permission{
+							Type: 2, //所有人可操作
+						},
+						Data:          msg_on_touch + " " + whiteLabel,
+						UnsupportTips: "请升级新版手机QQ",
+					},
+				}
+
+				// 如果当前行为空或已满（4个按钮），则创建一个新行
+				if currentRow == nil || buttonCount == 4 {
+					currentRow = &keyboard.Row{}
+					customKeyboard.Rows = append(customKeyboard.Rows, currentRow)
+					buttonCount = 0 // 重置按钮计数
+				}
+
+				// 将按钮添加到当前行
+				currentRow.Buttons = append(currentRow.Buttons, button)
+				buttonCount++
+			}
+
+			// 在循环结束后，最后一行可能不满4个按钮，但已经被正确处理
+
+			// 创建 MessageKeyboard 并设置其 Content
+			kb = &keyboard.MessageKeyboard{
+				Content: customKeyboard,
+			}
+		}
+	}
+	return md, kb, transmd
 }

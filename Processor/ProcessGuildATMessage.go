@@ -18,6 +18,7 @@ import (
 
 // ProcessGuildATMessage 处理消息，执行逻辑并可能使用 api 发送响应
 func (p *Processors) ProcessGuildATMessage(data *dto.WSATMessageData) error {
+	var AppIDString string
 	if !p.Settings.GlobalChannelToGroup {
 		// 将时间字符串转换为时间戳
 		t, err := time.Parse(time.RFC3339, string(data.Timestamp))
@@ -27,7 +28,7 @@ func (p *Processors) ProcessGuildATMessage(data *dto.WSATMessageData) error {
 		//获取s
 		s := client.GetGlobalS()
 		//转换at
-		messageText := handlers.RevertTransformedText(data, "guild", p.Api, p.Apiv2, 10000) //todo 这里未转换
+		messageText := handlers.RevertTransformedText(data, "guild", p.Api, p.Apiv2, 10000, 10000, config.GetWhiteEnable(1)) //todo 这里未转换
 		if messageText == "" {
 			mylog.Printf("信息被自定义黑白名单拦截")
 			return nil
@@ -35,7 +36,7 @@ func (p *Processors) ProcessGuildATMessage(data *dto.WSATMessageData) error {
 		//框架内指令
 		p.HandleFrameworkCommand(messageText, data, "guild")
 		//转换appid
-		AppIDString := strconv.FormatUint(p.Settings.AppID, 10)
+		AppIDString = strconv.FormatUint(p.Settings.AppID, 10)
 		//构造echo
 		echostr := AppIDString + "_" + strconv.FormatInt(s, 10)
 		//映射str的userid到int
@@ -74,7 +75,12 @@ func (p *Processors) ProcessGuildATMessage(data *dto.WSATMessageData) error {
 			SubType: "channel",
 			Time:    t.Unix(),
 			Avatar:  data.Author.Avatar,
-			Echo:    echostr,
+		}
+		// 根据条件判断是否添加Echo字段
+		if config.GetTwoWayEcho() {
+			onebotMsg.Echo = echostr
+			//用向应用端(如果支持)发送echo,来确定客户端的send_msg对应的触发词原文
+			echo.AddMsgIDv3(AppIDString, echostr, messageText)
 		}
 		// 获取MasterID数组
 		masterIDs := config.GetMasterID()
@@ -138,6 +144,8 @@ func (p *Processors) ProcessGuildATMessage(data *dto.WSATMessageData) error {
 			idmap.SimplifiedStoreID(data.Author.ID)
 			//补救措施
 			idmap.SimplifiedStoreID(data.ChannelID)
+			//补救措施
+			echo.AddMsgIDv3(AppIDString, data.ChannelID, data.ID)
 		} else {
 			//将channelid写入ini,可取出guild_id
 			ChannelID64, err = idmap.StoreIDv2(data.ChannelID)
@@ -157,7 +165,7 @@ func (p *Processors) ProcessGuildATMessage(data *dto.WSATMessageData) error {
 		//储存原来的(获取群列表需要)
 		idmap.WriteConfigv2(data.ChannelID, "guild_id", data.GuildID)
 		//转换at和图片
-		messageText := handlers.RevertTransformedText(data, "guild", p.Api, p.Apiv2, ChannelID64)
+		messageText := handlers.RevertTransformedText(data, "guild", p.Api, p.Apiv2, ChannelID64, userid64, config.GetWhiteEnable(1))
 		if messageText == "" {
 			mylog.Printf("信息被自定义黑白名单拦截")
 			return nil
@@ -223,6 +231,8 @@ func (p *Processors) ProcessGuildATMessage(data *dto.WSATMessageData) error {
 		// 根据条件判断是否添加Echo字段
 		if config.GetTwoWayEcho() {
 			groupMsg.Echo = echostr
+			//用向应用端(如果支持)发送echo,来确定客户端的send_msg对应的触发词原文
+			echo.AddMsgIDv3(AppIDString, echostr, messageText)
 		}
 		// 获取MasterID数组
 		masterIDs := config.GetMasterID()

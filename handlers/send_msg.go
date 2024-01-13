@@ -25,28 +25,28 @@ func HandleSendMsg(client callapi.Client, api openapi.OpenAPI, apiv2 openapi.Ope
 		// 当 message.Echo 是字符串类型时执行此块
 		msgType = echo.GetMsgTypeByKey(echoStr)
 	}
-	//如果获取不到 就用group_id获取信息类型
 	if msgType == "" {
 		msgType = GetMessageTypeByGroupid(config.GetAppIDStr(), message.Params.GroupID)
 	}
-	//如果获取不到 就用user_id获取信息类型
 	if msgType == "" {
 		msgType = GetMessageTypeByUserid(config.GetAppIDStr(), message.Params.UserID)
-	}
-	//新增 内存获取不到从数据库获取
-	if msgType == "" {
-		msgType = GetMessageTypeByUseridV2(message.Params.UserID)
 	}
 	if msgType == "" {
 		msgType = GetMessageTypeByGroupidV2(message.Params.GroupID)
 	}
-	var idInt64 int64
+	if msgType == "" {
+		msgType = GetMessageTypeByUseridV2(message.Params.UserID)
+	}
+
+	var idInt64, idInt642 int64
 	var err error
 
-	if message.Params.UserID != "" {
-		idInt64, err = ConvertToInt64(message.Params.UserID)
-	} else if message.Params.GroupID != "" {
-		idInt64, err = ConvertToInt64(message.Params.GroupID)
+	if message.Params.GroupID != "" {
+		idInt64, _ = ConvertToInt64(message.Params.GroupID)
+		idInt642, _ = ConvertToInt64(message.Params.UserID)
+	} else if message.Params.UserID != "" {
+		idInt64, _ = ConvertToInt64(message.Params.UserID)
+		idInt642, _ = ConvertToInt64(message.Params.GroupID)
 	}
 
 	//设置递归 对直接向gsk发送action时有效果
@@ -71,18 +71,16 @@ func HandleSendMsg(client callapi.Client, api openapi.OpenAPI, apiv2 openapi.Ope
 		//用GroupID给ChannelID赋值,因为我们是把频道虚拟成了群
 		message.Params.ChannelID = message.Params.GroupID.(string)
 		var RChannelID string
-		if config.GetIdmapPro() {
-			// 使用RetrieveRowByIDv2还原真实的ChannelID
+		if message.Params.UserID != nil && config.GetIdmapPro() {
 			RChannelID, _, err = idmap.RetrieveRowByIDv2Pro(message.Params.ChannelID, message.Params.UserID.(string))
-			if err != nil {
-				mylog.Printf("error retrieving real RChannelID: %v", err)
-			}
-		} else {
+			mylog.Printf("测试,通过Proid获取的RChannelID:%v", RChannelID)
+		}
+		if RChannelID == "" {
 			// 使用RetrieveRowByIDv2还原真实的ChannelID
 			RChannelID, err = idmap.RetrieveRowByIDv2(message.Params.ChannelID)
-			if err != nil {
-				mylog.Printf("error retrieving real RChannelID: %v", err)
-			}
+		}
+		if err != nil {
+			mylog.Printf("error retrieving real RChannelID: %v", err)
 		}
 		message.Params.ChannelID = RChannelID
 		retmsg, _ = HandleSendGuildChannelMsg(client, api, apiv2, message)
@@ -101,6 +99,7 @@ func HandleSendMsg(client callapi.Client, api openapi.OpenAPI, apiv2 openapi.Ope
 	//重置递归类型
 	if echo.GetMapping(idInt64) <= 0 {
 		echo.AddMsgType(config.GetAppIDStr(), idInt64, "")
+		echo.AddMsgType(config.GetAppIDStr(), idInt642, "")
 	}
 	echo.AddMapping(idInt64, echo.GetMapping(idInt64)-1)
 
@@ -140,36 +139,15 @@ func GetMessageIDByUseridOrGroupid(appID string, userID interface{}) string {
 		return ""
 	}
 	key := appID + "_" + fmt.Sprint(userid64)
+	mylog.Printf("GetMessageIDByUseridOrGroupid_key:%v", key)
 	messageid := echo.GetMsgIDByKey(key)
-	// if messageid == "" {
-	// 	// 尝试使用9位数key
-	// 	messageid, err = generateKeyAndFetchMessageID(appID, userIDStr, 9)
-	// 	if err != nil {
-	// 		mylog.Printf("Error generating 9 digits key: %v", err)
-	// 		return ""
-	// 	}
-
-	// 	// 如果9位数key失败，则尝试10位数key
-	// 	if messageid == "" {
-	// 		messageid, err = generateKeyAndFetchMessageID(appID, userIDStr, 10)
-	// 		if err != nil {
-	// 			mylog.Printf("Error generating 10 digits key: %v", err)
-	// 			return ""
-	// 		}
-	// 	}
-	// }
+	if messageid == "" {
+		key := appID + "_" + userIDStr
+		mylog.Printf("GetMessageIDByUseridOrGroupid_key_2:%v", key)
+		messageid = echo.GetMsgIDByKey(key)
+	}
 	return messageid
 }
-
-// generateKeyAndFetchMessageID 尝试生成特定长度的key，并获取messageID
-// func generateKeyAndFetchMessageID(appID string, userIDStr string, keyLength int) (string, error) {
-// 	userid64, err := idmap.GenerateRowID(userIDStr, keyLength)
-// 	if err != nil {
-// 		return "", err
-// 	}
-// 	key := appID + "_" + fmt.Sprint(userid64)
-// 	return echo.GetMsgIDByKey(key), nil
-// }
 
 // 通过user_id获取messageID
 func GetMessageIDByUseridAndGroupid(appID string, userID interface{}, groupID interface{}) string {
@@ -225,6 +203,7 @@ func GetMessageIDByUseridAndGroupid(appID string, userID interface{}, groupID in
 			return ""
 		}
 	}
-	key := appID + "_" + fmt.Sprint(userid64) + "_" + fmt.Sprint(groupid64)
+	key := appID + "_" + fmt.Sprint(groupid64) + "_" + fmt.Sprint(userid64)
+	mylog.Printf("GetMessageIDByUseridAndGroupid_key:%v", key)
 	return echo.GetMsgIDByKey(key)
 }

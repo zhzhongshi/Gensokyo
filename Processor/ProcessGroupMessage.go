@@ -45,6 +45,8 @@ func (p *Processors) ProcessGroupMessage(data *dto.WSGroupATMessageData) error {
 		idmap.SimplifiedStoreID(data.Author.ID)
 		//补救措施
 		idmap.SimplifiedStoreID(data.GroupID)
+		//补救措施
+		echo.AddMsgIDv3(AppIDString, data.GroupID, data.ID)
 	} else {
 		// 映射str的GroupID到int
 		GroupID64, err = idmap.StoreIDv2(data.GroupID)
@@ -60,7 +62,7 @@ func (p *Processors) ProcessGroupMessage(data *dto.WSGroupATMessageData) error {
 		}
 	}
 	// 转换at
-	messageText := handlers.RevertTransformedText(data, "group", p.Api, p.Apiv2, GroupID64)
+	messageText := handlers.RevertTransformedText(data, "group", p.Api, p.Apiv2, GroupID64, userid64, config.GetWhiteEnable(4))
 	if messageText == "" {
 		mylog.Printf("信息被自定义黑白名单拦截")
 		return nil
@@ -133,6 +135,8 @@ func (p *Processors) ProcessGroupMessage(data *dto.WSGroupATMessageData) error {
 	// 根据条件判断是否添加Echo字段
 	if config.GetTwoWayEcho() {
 		groupMsg.Echo = echostr
+		//用向应用端(如果支持)发送echo,来确定客户端的send_msg对应的触发词原文
+		echo.AddMsgIDv3(AppIDString, echostr, messageText)
 	}
 	// 获取MasterID数组
 	masterIDs := config.GetMasterID()

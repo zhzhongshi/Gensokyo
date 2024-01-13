@@ -63,6 +63,10 @@ func (p *Processors) ProcessChannelDirectMessage(data *dto.WSDirectMessageData) 
 			idmap.SimplifiedStoreID(data.Author.ID)
 			//补救措施
 			idmap.SimplifiedStoreID(data.ChannelID)
+			//补救措施
+			echo.AddMsgIDv3(AppIDString, data.ChannelID, data.ID)
+			//补救措施
+			echo.AddMsgIDv3(AppIDString, data.Author.ID, data.ID)
 		} else {
 			//将真实id转为int userid64
 			userid64, err = idmap.StoreIDv2(data.Author.ID)
@@ -94,7 +98,7 @@ func (p *Processors) ProcessChannelDirectMessage(data *dto.WSDirectMessageData) 
 		}
 		messageID := int(messageID64)
 		//转换at
-		messageText := handlers.RevertTransformedText(data, "guild_private", p.Api, p.Apiv2, userid64)
+		messageText := handlers.RevertTransformedText(data, "guild_private", p.Api, p.Apiv2, userid64, userid64, config.GetWhiteEnable(3))
 		if messageText == "" {
 			mylog.Printf("信息被自定义黑白名单拦截")
 			return nil
@@ -137,6 +141,8 @@ func (p *Processors) ProcessChannelDirectMessage(data *dto.WSDirectMessageData) 
 		// 根据条件判断是否添加Echo字段
 		if config.GetTwoWayEcho() {
 			privateMsg.Echo = echostr
+			//用向应用端(如果支持)发送echo,来确定客户端的send_msg对应的触发词原文
+			echo.AddMsgIDv3(AppIDString, echostr, messageText)
 		}
 		// 将当前s和appid和message进行映射
 		echo.AddMsgID(AppIDString, s, data.ID)
@@ -168,7 +174,7 @@ func (p *Processors) ProcessChannelDirectMessage(data *dto.WSDirectMessageData) 
 			//获取s
 			s := client.GetGlobalS()
 			//转换at
-			messageText := handlers.RevertTransformedText(data, "guild_private", p.Api, p.Apiv2, 10000) //todo 这里未转换
+			messageText := handlers.RevertTransformedText(data, "guild_private", p.Api, p.Apiv2, 10000, 10000, config.GetWhiteEnable(3)) //todo 这里未转换
 			if messageText == "" {
 				mylog.Printf("信息被自定义黑白名单拦截")
 				return nil
@@ -214,6 +220,8 @@ func (p *Processors) ProcessChannelDirectMessage(data *dto.WSDirectMessageData) 
 			// 根据条件判断是否添加Echo字段
 			if config.GetTwoWayEcho() {
 				onebotMsg.Echo = echostr
+				//用向应用端(如果支持)发送echo,来确定客户端的send_msg对应的触发词原文
+				echo.AddMsgIDv3(AppIDString, echostr, messageText)
 			}
 			// 获取MasterID数组
 			masterIDs := config.GetMasterID()
@@ -302,7 +310,7 @@ func (p *Processors) ProcessChannelDirectMessage(data *dto.WSDirectMessageData) 
 			//直接储存 适用于私信场景私聊
 			idmap.WriteConfigv2(data.ChannelID, "guild_id", data.GuildID)
 			//转换at
-			messageText := handlers.RevertTransformedText(data, "guild_private", p.Api, p.Apiv2, userid64)
+			messageText := handlers.RevertTransformedText(data, "guild_private", p.Api, p.Apiv2, userid64, userid64, config.GetWhiteEnable(3))
 			if messageText == "" {
 				mylog.Printf("信息被自定义黑白名单拦截")
 				return nil
@@ -364,6 +372,8 @@ func (p *Processors) ProcessChannelDirectMessage(data *dto.WSDirectMessageData) 
 			// 根据条件判断是否添加Echo字段
 			if config.GetTwoWayEcho() {
 				groupMsg.Echo = echostr
+				//用向应用端(如果支持)发送echo,来确定客户端的send_msg对应的触发词原文
+				echo.AddMsgIDv3(AppIDString, echostr, messageText)
 			}
 			// 获取MasterID数组
 			masterIDs := config.GetMasterID()

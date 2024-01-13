@@ -244,11 +244,10 @@ func main() {
 				}
 
 				// 确保所有尝试建立的连接都有对应的wsClient
-				if len(wsClients) != attemptedConnections {
-					log.Println("Error: Not all wsClients are initialized!(反向ws未设置或连接失败)")
-					// 处理初始化失败的情况
+				if len(wsClients) == 0 {
+					log.Println("Error: Not all wsClients are initialized!(反向ws未设置或全部连接失败)")
+					// 处理连接失败的情况 只启动正向
 					p = Processor.NewProcessorV2(api, apiV2, &conf.Settings)
-					//只启动正向
 				} else {
 					log.Println("All wsClients are successfully initialized.")
 					// 所有客户端都成功初始化
@@ -346,6 +345,30 @@ func main() {
 			c.Header("Content-Type", "application/json")
 			c.String(200, content)
 		})
+
+		// 调用 config.GetIdentifyAppids 获取 appid 数组
+		identifyAppids := config.GetIdentifyAppids()
+
+		// 如果 identifyAppids 不是 nil 且有多个元素
+		if len(identifyAppids) >= 1 {
+			// 从数组中去除 config.GetAppID() 来避免重复
+			var filteredAppids []int64
+			for _, appid := range identifyAppids {
+				if appid != int64(config.GetAppID()) {
+					filteredAppids = append(filteredAppids, appid)
+				}
+			}
+
+			// 为每个 appid 设置路由
+			for _, appid := range filteredAppids {
+				fileName := fmt.Sprintf("%d.json", appid)
+				r.GET("/"+fileName, func(c *gin.Context) {
+					content := fmt.Sprintf(`{"bot_appid":%d}`, appid)
+					c.Header("Content-Type", "application/json")
+					c.String(200, content)
+				})
+			}
+		}
 	}
 	// 创建一个http.Server实例（主服务器）
 	httpServer := &http.Server{
@@ -527,6 +550,20 @@ func C2CMessageEventHandler() event.C2CMessageEventHandler {
 	}
 }
 
+// GroupAddRobotEventHandler 实现处理 群机器人新增 事件的回调
+func GroupAddRobotEventHandler() event.GroupAddRobotEventHandler {
+	return func(event *dto.WSPayload, data *dto.GroupAddBotEvent) error {
+		return p.ProcessGroupAddBot(data)
+	}
+}
+
+// GroupDelRobotEventHandler 实现处理 群机器人删除 事件的回调
+func GroupDelRobotEventHandler() event.GroupDelRobotEventHandler {
+	return func(event *dto.WSPayload, data *dto.GroupAddBotEvent) error {
+		return p.ProcessGroupDelBot(data)
+	}
+}
+
 func getHandlerByName(handlerName string) (interface{}, bool) {
 	switch handlerName {
 	case "ReadyHandler": //连接成功
@@ -554,6 +591,10 @@ func getHandlerByName(handlerName string) (interface{}, bool) {
 		return GroupATMessageEventHandler(), true
 	case "C2CMessageEventHandler": //群私聊
 		return C2CMessageEventHandler(), true
+	case "GroupAddRobotEventHandler": //群私聊
+		return GroupAddRobotEventHandler(), true
+	case "GroupDelRobotEventHandler": //群私聊
+		return GroupDelRobotEventHandler(), true
 	default:
 		log.Printf("Unknown handler: %s\n", handlerName)
 		return nil, false
